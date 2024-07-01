@@ -29,6 +29,7 @@ const sidebars = {
         'installation/grafana',
         'installation/cli',
         'installation/config',
+        'installation/verify-signed-images'
       ],
     },
     {
@@ -47,6 +48,7 @@ const sidebars = {
             'metrics/plugins/packetforward',
             'metrics/plugins/dropreason',
             'metrics/plugins/linuxutil',
+            'metrics/plugins/infiniband',
             'metrics/plugins/dns',
             'metrics/plugins/hnsstats',
             'metrics/plugins/packetparser',
@@ -80,7 +82,14 @@ const sidebars = {
         'troubleshooting/basic-metrics',
       ],
     },
-    'contributing/readme',
+    {
+      type: 'category',
+      label: 'Contributing',
+      items: [
+        'contributing/readme',
+        'contributing/developing',
+      ],
+    }
   ],
 
 };

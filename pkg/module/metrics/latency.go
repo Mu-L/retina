@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/api/v1/flow"
-	v1 "github.com/cilium/cilium/api/v1/flow"
 	ttlcache "github.com/jellydator/ttlcache/v3"
 	api "github.com/microsoft/retina/crd/api/v1alpha1"
 	"github.com/microsoft/retina/pkg/common"
@@ -107,7 +106,6 @@ func NewLatencyMetrics(ctxOptions *api.MetricsContextOptions, fl *log.ZapLogger,
 			exporter.AdvancedRegistry,
 			noResponseFromNodeAPIServerName,
 			noResponseFromNodeAPIServerDesc,
-			"count",
 		)
 	}
 
@@ -178,8 +176,8 @@ func (lm *LatencyMetrics) Clean() {
 	}
 }
 
-func (lm *LatencyMetrics) ProcessFlow(f *v1.Flow) {
-	if f == nil || f.L4 == nil || f.L4.GetTCP() == nil || utils.GetTcpID(f) == 0 || f.IP == nil {
+func (lm *LatencyMetrics) ProcessFlow(f *flow.Flow) {
+	if f == nil || f.GetL4() == nil || f.GetL4().GetTCP() == nil || utils.GetTCPID(f) == 0 || f.GetIP() == nil {
 		return
 	}
 
@@ -255,33 +253,33 @@ func (lm *LatencyMetrics) ProcessFlow(f *v1.Flow) {
 |                                                 |
 +-------------------------------------------------+
 */
-func (lm *LatencyMetrics) calculateLatency(f *v1.Flow) {
+func (lm *LatencyMetrics) calculateLatency(f *flow.Flow) {
 	// Ignore all packets observed at endpoint.
 	// We only care about node-apiserver packets observed at eth0.
 	// TO_NETWORK: Packets leaving node via eth0.
 	// FROM_NETWORK: Packets entering node via eth0.
-	if f.TraceObservationPoint == v1.TraceObservationPoint_TO_NETWORK {
+	if f.GetTraceObservationPoint() == flow.TraceObservationPoint_TO_NETWORK {
 		k := key{
 			srcIP: f.IP.Source,
 			dstIP: f.IP.Destination,
-			srcP:  f.L4.GetTCP().SourcePort,
-			dstP:  f.L4.GetTCP().DestinationPort,
-			id:    utils.GetTcpID(f),
+			srcP:  f.GetL4().GetTCP().GetSourcePort(),
+			dstP:  f.GetL4().GetTCP().GetDestinationPort(),
+			id:    utils.GetTCPID(f),
 		}
 		// There will be multiple identical packets with same ID. Store only the first one.
 		if item := lm.cache.Get(k); item == nil {
 			lm.cache.Set(k, &val{
 				t:     f.Time.Nanos,
-				flags: f.L4.GetTCP().Flags,
+				flags: f.GetL4().GetTCP().GetFlags(),
 			}, TTL)
 		}
-	} else if f.TraceObservationPoint == v1.TraceObservationPoint_FROM_NETWORK {
+	} else if f.GetTraceObservationPoint() == flow.TraceObservationPoint_FROM_NETWORK {
 		k := key{
 			srcIP: f.IP.Destination,
 			dstIP: f.IP.Source,
-			srcP:  f.L4.GetTCP().DestinationPort,
-			dstP:  f.L4.GetTCP().SourcePort,
-			id:    utils.GetTcpID(f),
+			srcP:  f.GetL4().GetTCP().GetDestinationPort(),
+			dstP:  f.GetL4().GetTCP().GetSourcePort(),
+			id:    utils.GetTCPID(f),
 		}
 		if item := lm.cache.Get(k); item != nil {
 			// Calculate latency in milliseconds.

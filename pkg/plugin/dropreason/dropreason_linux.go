@@ -5,17 +5,15 @@
 package dropreason
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
 	"path"
 	"runtime"
 	"time"
-	"unsafe"
-
-	kcfg "github.com/microsoft/retina/pkg/config"
-	"github.com/microsoft/retina/pkg/utils"
 
 	"github.com/cilium/cilium/api/v1/flow"
 	hubblev1 "github.com/cilium/cilium/pkg/hubble/api/v1"
@@ -23,18 +21,20 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/perf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/microsoft/retina/internal/ktime"
+	kcfg "github.com/microsoft/retina/pkg/config"
 	"github.com/microsoft/retina/pkg/enricher"
 	"github.com/microsoft/retina/pkg/loader"
 	"github.com/microsoft/retina/pkg/log"
 	"github.com/microsoft/retina/pkg/metrics"
 	"github.com/microsoft/retina/pkg/plugin/api"
 	plugincommon "github.com/microsoft/retina/pkg/plugin/common"
-	"go.uber.org/zap"
-
 	_ "github.com/microsoft/retina/pkg/plugin/dropreason/_cprog" // nolint
+	"github.com/microsoft/retina/pkg/utils"
+	"go.uber.org/zap"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go@master -cc clang-14 -cflags "-g -O2 -Wall -D__TARGET_ARCH_${GOARCH} -Wall" -target ${GOARCH} -type metrics_map_value -type drop_reason_t -type packet kprobe ./_cprog/drop_reason.c -- -I../lib/_${GOARCH} -I../lib/common/libbpf/_src -I../filter/_cprog/
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go@master -cflags "-g -O2 -Wall -D__TARGET_ARCH_${GOARCH} -Wall" -target ${GOARCH} -type metrics_map_value -type drop_reason_t -type packet kprobe ./_cprog/drop_reason.c -- -I../lib/_${GOARCH} -I../lib/common/libbpf/_src -I../filter/_cprog/
 const (
 	nfHookSlowFn         = "nf_hook_slow"
 	tcpConnectFn         = "tcp_v4_connect"
@@ -94,11 +94,6 @@ func (dr *dropReason) Compile(ctx context.Context) error {
 	dir, err := absPath()
 	if err != nil {
 		return err
-	}
-
-	// Generate dynamic header file.
-	if err := dr.Generate(ctx); err != nil {
-		dr.l.Error("failed to generate DropReason dynamic header:%w", zap.Error(err))
 	}
 
 	bpfSourceFile := fmt.Sprintf("%s/%s/%s", dir, bpfSourceDir, bpfSourceFileName)
@@ -350,13 +345,22 @@ func (dr *dropReason) processRecord(ctx context.Context, id int) {
 			dr.l.Info("Context is done, dropreason worker will stop running", zap.Int("id", id))
 			return
 		case record := <-dr.recordsChannel:
-			bpfEvent := (*kprobePacket)(unsafe.Pointer(&record.RawSample[0])) //nolint:typecheck
+			var bpfEvent kprobePacket
+			err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &bpfEvent)
+			if err != nil {
+				if binary.Size(bpfEvent) != len(record.RawSample) {
+					dr.l.Error("Error reading bpf event due to size mismatch", zap.Error(err), zap.Int("expected", binary.Size(bpfEvent)), zap.Int("actual", len(record.RawSample)))
+				} else {
+					dr.l.Error("Error reading bpf event", zap.Error(err))
+				}
+				continue
+			}
 			sourcePortShort := uint32(utils.HostToNetShort(bpfEvent.SrcPort))
 			destinationPortShort := uint32(utils.HostToNetShort(bpfEvent.DstPort))
 			dropKey := (dropMetricKey)(bpfEvent.Key)
 
 			fl := utils.ToFlow(
-				int64(bpfEvent.Ts),
+				ktime.MonotonicOffset.Nanoseconds()+int64(bpfEvent.Ts),
 				utils.Int2ip(bpfEvent.SrcIp).To4(), // Precautionary To4() call.
 				utils.Int2ip(bpfEvent.DstIp).To4(), // Precautionary To4() call.
 				sourcePortShort,
@@ -364,23 +368,31 @@ func (dr *dropReason) processRecord(ctx context.Context, id int) {
 				bpfEvent.Proto,
 				2, // drop reason packet doesn't have a direction yet, so we set it to 2
 				flow.Verdict_DROPPED,
-				dropKey.DropType,
 			)
 			if fl == nil {
 				dr.l.Warn("Could not convert bpfEvent to flow", zap.Any("bpfEvent", bpfEvent))
 				continue
 			}
-			fl.DropReasonDesc = flow.DropReason(bpfEvent.Key.DropType)
-			utils.AddPacketSize(fl, bpfEvent.SkbLen)
+
+			meta := &utils.RetinaMetadata{}
+
+			// Add drop reason to the flow's metadata.
+			utils.AddDropReason(fl, meta, dropKey.DropType)
+
+			// Add packet size to the flow's metadata.
+			utils.AddPacketSize(meta, bpfEvent.SkbLen)
+
+			// Add metadata to the flow.
+			utils.AddRetinaMetadata(fl, meta)
 
 			// This is only for development purposes.
 			// Removing this makes logs way too chatter-y.
-			dr.l.Debug("DropReason Packet Received", zap.Any("flow", fl), zap.Any("Raw Bpf Event", bpfEvent), zap.Uint32("drop type", bpfEvent.Key.DropType))
+			dr.l.Debug("DropReason Packet Received", zap.Any("flow", fl), zap.Any("Raw Bpf Event", bpfEvent), zap.Uint32("drop type", dropKey.DropType))
 
 			// Write the event to the enricher.
 			ev := &hubblev1.Event{
 				Event:     fl,
-				Timestamp: fl.Time,
+				Timestamp: fl.GetTime(),
 			}
 			if dr.enricher != nil {
 				dr.enricher.Write(ev)

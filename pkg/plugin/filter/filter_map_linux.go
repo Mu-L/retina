@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/rlimit"
 	"github.com/microsoft/retina/pkg/log"
 	plugincommon "github.com/microsoft/retina/pkg/plugin/common"
 	"github.com/microsoft/retina/pkg/utils"
@@ -19,7 +20,7 @@ import (
 	_ "github.com/microsoft/retina/pkg/plugin/filter/_cprog" // nolint
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go@master -cc clang-14 -cflags "-g -O2 -Wall -D__TARGET_ARCH_${GOARCH} -Wall" -target ${GOARCH} -type mapKey filter ./_cprog/retina_filter.c -- -I../lib/_${GOARCH} -I../lib/common/libbpf/_src
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go@master -cflags "-g -O2 -Wall -D__TARGET_ARCH_${GOARCH} -Wall" -target ${GOARCH} -type mapKey filter ./_cprog/retina_filter.c -- -I../lib/_${GOARCH} -I../lib/common/libbpf/_src
 
 var (
 	f    *FilterMap
@@ -42,6 +43,12 @@ func Init() (*FilterMap, error) {
 	}
 	if f.obj != nil {
 		return f, nil
+	}
+
+	// Allow the current process to lock memory for eBPF resources.
+	if err := rlimit.RemoveMemlock(); err != nil {
+		f.l.Error("RemoveMemlock failed", zap.Error(err))
+		return f, err
 	}
 
 	obj := &filterObjects{}                                //nolint:typecheck

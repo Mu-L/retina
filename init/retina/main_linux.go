@@ -5,6 +5,7 @@ package main
 
 import (
 	"github.com/microsoft/retina/pkg/bpf"
+	"github.com/microsoft/retina/pkg/ciliumfs"
 	"github.com/microsoft/retina/pkg/log"
 	"github.com/microsoft/retina/pkg/telemetry"
 	"go.uber.org/zap"
@@ -32,10 +33,15 @@ func main() {
 		defer telemetry.TrackPanic()
 	}
 
-	log.SetupZapLogger(opts)
-	log.Logger().AddFields(zap.String("version", version))
-	l := log.Logger().Named("init-retina")
+	zl, err := log.SetupZapLogger(opts)
+	if err != nil {
+		panic(err)
+	}
+	l := zl.Named("init-retina").With(zap.String("version", version))
 
 	// Setup BPF
 	bpf.Setup(l)
+
+	// Setup CiliumFS.
+	ciliumfs.Setup(l)
 }

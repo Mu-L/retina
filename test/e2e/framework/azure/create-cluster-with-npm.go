@@ -53,8 +53,8 @@ func (c *CreateNPMCluster) Run() error {
 
 	//nolint:appendCombine // separate for verbosity
 	npmCluster.Properties.AgentPoolProfiles = append(npmCluster.Properties.AgentPoolProfiles, &armcontainerservice.ManagedClusterAgentPoolProfile{ //nolint:all
-		Type:               to.Ptr(armcontainerservice.AgentPoolTypeVirtualMachineScaleSets),
-		AvailabilityZones:  []*string{to.Ptr("1")},
+		Type: to.Ptr(armcontainerservice.AgentPoolTypeVirtualMachineScaleSets),
+		// AvailabilityZones:  []*string{to.Ptr("1")},
 		Count:              to.Ptr[int32](AuxilaryNodeCount),
 		EnableNodePublicIP: to.Ptr(false),
 		Mode:               to.Ptr(armcontainerservice.AgentPoolModeUser),
@@ -84,8 +84,8 @@ func (c *CreateNPMCluster) Run() error {
 	*/
 	//nolint:appendCombine // separate for verbosity
 	npmCluster.Properties.AgentPoolProfiles = append(npmCluster.Properties.AgentPoolProfiles, &armcontainerservice.ManagedClusterAgentPoolProfile{ //nolint:all
-		Type:               to.Ptr(armcontainerservice.AgentPoolTypeVirtualMachineScaleSets),
-		AvailabilityZones:  []*string{to.Ptr("1")},
+		Type: to.Ptr(armcontainerservice.AgentPoolTypeVirtualMachineScaleSets),
+		// AvailabilityZones:  []*string{to.Ptr("1")},
 		Count:              to.Ptr[int32](AuxilaryNodeCount),
 		EnableNodePublicIP: to.Ptr(false),
 		Mode:               to.Ptr(armcontainerservice.AgentPoolModeUser),
@@ -140,7 +140,10 @@ func (c *CreateNPMCluster) Run() error {
 		case <-ticker.C:
 			log.Printf("waiting for cluster %s to be ready...\n", c.ClusterName)
 		case <-notifychan:
-			return fmt.Errorf("received notification, failed to create cluster: %w", err)
+			if err != nil {
+				return fmt.Errorf("received notification, failed to create cluster: %w", err)
+			}
+			return nil
 		}
 	}
 }

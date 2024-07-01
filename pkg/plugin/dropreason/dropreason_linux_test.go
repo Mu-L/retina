@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf/perf"
-	"github.com/golang/mock/gomock"
 	kcfg "github.com/microsoft/retina/pkg/config"
 	"github.com/microsoft/retina/pkg/enricher"
 	"github.com/microsoft/retina/pkg/log"
@@ -22,6 +21,7 @@ import (
 	mocks "github.com/microsoft/retina/pkg/plugin/dropreason/mocks"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -99,6 +99,11 @@ func TestCompile(t *testing.T) {
 	err := os.Remove(expectedOutputFile)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Expected no error. Error: %+v", err)
+	}
+
+	err = p.Generate(context.Background())
+	if err != nil {
+		t.Fatal("Expected no error. Error:", err)
 	}
 
 	err = p.Compile(context.Background())
@@ -201,9 +206,16 @@ func TestDropReasonRun(t *testing.T) {
 	mockedMapIterator.EXPECT().Err().Return(nil).MinTimes(1)
 	mockedMapIterator.EXPECT().Next(gomock.Any(), gomock.Any()).Return(false).MinTimes(1)
 
+	// create a rawSample slice and fill it with 56 bytes of data. 56 is the size of the rawSample in perf.Record (kprobePacket)
+	rawSample := make([]byte, 56)
+	for i := range rawSample {
+		rawSample[i] = byte(i)
+	}
+
+	// TODO(nddq) : test an actual kprobePacket similar to what we are doing with packetparserPacket in packetparser
 	mockedPerfRecord := perf.Record{
 		CPU:         0,
-		RawSample:   []byte{0x01, 0x02, 0x03},
+		RawSample:   rawSample,
 		LostSamples: 0,
 	}
 	mockedPerfReader.EXPECT().Read().Return(mockedPerfRecord, nil).MinTimes(1)
@@ -248,12 +260,18 @@ func TestDropReasonReadDataPodLevelEnabled(t *testing.T) {
 	mockedPerfReader := mocks.NewMockIPerfReader(ctrl)
 	menricher := enricher.NewMockEnricherInterface(ctrl) //nolint:typecheck
 
-	// mock perf reader record
+	// create a rawSample slice and fill it with 56 bytes of data. 56 is the size of the rawSample in perf.Record (kprobePacket)
+	rawSample := make([]byte, 56)
+	for i := range rawSample {
+		rawSample[i] = byte(i)
+	}
+
 	mockedPerfRecord := perf.Record{
 		CPU:         0,
-		RawSample:   []byte{0x01, 0x02, 0x03},
+		RawSample:   rawSample,
 		LostSamples: 0,
 	}
+
 	mockedPerfReader.EXPECT().Read().Return(mockedPerfRecord, nil).MinTimes(1)
 	menricher.EXPECT().Write(gomock.Any()).MinTimes(1)
 
@@ -331,10 +349,15 @@ func TestDropReasonReadData_WithPerfArrayLostSamples(t *testing.T) {
 	mockedMap := mocks.NewMockIMap(ctrl)
 	mockedPerfReader := mocks.NewMockIPerfReader(ctrl)
 
-	// mock perf reader record
+	// create a rawSample slice and fill it with 56 bytes of data. 56 is the size of the rawSample in perf.Record (kprobePacket)
+	rawSample := make([]byte, 56)
+	for i := range rawSample {
+		rawSample[i] = byte(i)
+	}
+
 	mockedPerfRecord := perf.Record{
 		CPU:         0,
-		RawSample:   []byte{0x01, 0x02, 0x03},
+		RawSample:   rawSample,
 		LostSamples: 3,
 	}
 	mockedPerfReader.EXPECT().Read().Return(mockedPerfRecord, nil).MinTimes(1)
@@ -368,10 +391,15 @@ func TestDropReasonReadData_WithUnknownError(t *testing.T) {
 	mockedMap := mocks.NewMockIMap(ctrl)
 	mockedPerfReader := mocks.NewMockIPerfReader(ctrl)
 
-	// mock perf reader record
+	// create a rawSample slice and fill it with 56 bytes of data. 56 is the size of the rawSample in perf.Record (kprobePacket)
+	rawSample := make([]byte, 56)
+	for i := range rawSample {
+		rawSample[i] = byte(i)
+	}
+
 	mockedPerfRecord := perf.Record{
 		CPU:         0,
-		RawSample:   []byte{0x01, 0x02, 0x03},
+		RawSample:   rawSample,
 		LostSamples: 3,
 	}
 	mockedPerfReader.EXPECT().Read().Return(mockedPerfRecord, errors.New("Unknown Error")).MinTimes(1)

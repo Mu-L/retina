@@ -1,0 +1,93 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    k8s-app: {{ include "retina.name" . }}
+    {{- include "retina.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rbac
+  namespace: {{ .Values.namespace }}
+  name: retina-cluster-reader
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["pods", "services", "replicationcontrollers", "nodes", "namespaces"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: ["networking.azure.com"]
+    resources: ["clusterobservers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups:
+      - retina.sh
+    resources:
+      - retinaendpoints
+    verbs:
+      - get
+      - list
+      - watch
+  {{- if .Values.operator.enabled }}
+  - apiGroups:
+    - ""
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - retina.sh
+    resources:
+      - retinaendpoints
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - retina.sh
+    resources:
+      - metricsconfigurations
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - retina.sh
+    resources:
+      - retinaendpoints/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - retina.sh
+    resources:
+      - retinaendpoints/status
+    verbs:
+      - get
+      - patch
+      - update
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    k8s-app: {{ include "retina.name" . }}
+    {{- include "retina.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rbac
+  name: retina-cluster-reader-binding
+  namespace: {{ .Values.namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: retina-agent
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: ClusterRole
+  name: retina-cluster-reader
+  apiGroup: rbac.authorization.k8s.io

@@ -68,8 +68,8 @@ func GetStarterClusterTemplate(location string) armcontainerservice.ManagedClust
 			*/
 			AgentPoolProfiles: []*armcontainerservice.ManagedClusterAgentPoolProfile{
 				{
-					Type:               to.Ptr(armcontainerservice.AgentPoolTypeVirtualMachineScaleSets),
-					AvailabilityZones:  []*string{to.Ptr("1")},
+					Type: to.Ptr(armcontainerservice.AgentPoolTypeVirtualMachineScaleSets),
+					// AvailabilityZones:  []*string{to.Ptr("1")},
 					Count:              to.Ptr[int32](MaxNumberOfNodes),
 					EnableNodePublicIP: to.Ptr(false),
 					Mode:               to.Ptr(armcontainerservice.AgentPoolModeSystem),

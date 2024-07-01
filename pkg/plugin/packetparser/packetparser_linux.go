@@ -5,22 +5,24 @@
 package packetparser
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
 	"path"
 	"runtime"
 	"sync"
-	"unsafe"
 
 	"github.com/cilium/cilium/api/v1/flow"
 	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/perf"
 	"github.com/cilium/ebpf/rlimit"
-	tc "github.com/florianl/go-tc"
+	"github.com/florianl/go-tc"
 	helper "github.com/florianl/go-tc/core"
+	"github.com/microsoft/retina/internal/ktime"
 	"github.com/microsoft/retina/pkg/common"
 	kcfg "github.com/microsoft/retina/pkg/config"
 	"github.com/microsoft/retina/pkg/enricher"
@@ -29,20 +31,21 @@ import (
 	"github.com/microsoft/retina/pkg/metrics"
 	"github.com/microsoft/retina/pkg/plugin/api"
 	plugincommon "github.com/microsoft/retina/pkg/plugin/common"
+	_ "github.com/microsoft/retina/pkg/plugin/lib/_amd64"             // nolint
+	_ "github.com/microsoft/retina/pkg/plugin/lib/_arm64"             // nolint
+	_ "github.com/microsoft/retina/pkg/plugin/lib/common/libbpf/_src" // nolint
+	_ "github.com/microsoft/retina/pkg/plugin/packetparser/_cprog"    // nolint
 	"github.com/microsoft/retina/pkg/pubsub"
 	"github.com/microsoft/retina/pkg/utils"
 	"github.com/microsoft/retina/pkg/watchers/endpoint"
 	"github.com/vishvananda/netlink"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
-
-	_ "github.com/microsoft/retina/pkg/plugin/lib/_amd64"             // nolint
-	_ "github.com/microsoft/retina/pkg/plugin/lib/_arm64"             // nolint
-	_ "github.com/microsoft/retina/pkg/plugin/lib/common/libbpf/_src" // nolint
-	_ "github.com/microsoft/retina/pkg/plugin/packetparser/_cprog"    // nolint
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go@master -cc clang-14 -cflags "-g -O2 -Wall -D__TARGET_ARCH_${GOARCH} -Wall" -target ${GOARCH} -type packet packetparser ./_cprog/packetparser.c -- -I../lib/_${GOARCH} -I../lib/common/libbpf/_src -I../filter/_cprog/
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go@master -cflags "-g -O2 -Wall -D__TARGET_ARCH_${GOARCH} -Wall" -target ${GOARCH} -type packet packetparser ./_cprog/packetparser.c -- -I../lib/_${GOARCH} -I../lib/common/libbpf/_src -I../filter/_cprog/
+
+var errNoOutgoingLinks = errors.New("could not determine any outgoing links")
 
 // New creates a packetparser plugin.
 func New(cfg *kcfg.Config) api.Plugin {
@@ -86,10 +89,6 @@ func (p *packetParser) Compile(ctx context.Context) error {
 		return err
 	}
 
-	// Generate dynamic header file.
-	if err := p.Generate(ctx); err != nil {
-		p.l.Error("failed to generate PacketParser dynamic header:%w", zap.Error(err))
-	}
 	bpfSourceFile := fmt.Sprintf("%s/%s/%s", dir, bpfSourceDir, bpfSourceFileName)
 	bpfOutputFile := fmt.Sprintf("%s/%s", dir, bpfObjectFileName)
 	arch := runtime.GOARCH
@@ -208,20 +207,27 @@ func (p *packetParser) Start(ctx context.Context) error {
 		p.callbackID = ps.Subscribe(common.PubSubEndpoints, &fn)
 	}
 
-	// Attach to eth0 for latency.
-	eth0Link, err := utils.GetInterface(Eth0, Device)
-	// eth0Link, err := retinautils.GetInterface("azvb22061c2658", "veth")
+	outgoingLinks, err := utils.GetDefaultOutgoingLinks()
 	if err != nil {
 		return err
 	}
-	p.l.Info("Attaching Packetparser to eth0", zap.Any("eth0Link", eth0Link.Attrs()))
-	p.createQdiscAndAttach(*eth0Link.Attrs(), Device)
+	if len(outgoingLinks) == 0 {
+		return errNoOutgoingLinks
+	}
+	outgoingLink := outgoingLinks[0] // Take first link until multi-link support is implemented
+
+	outgoingLinkAttributes := outgoingLink.Attrs()
+	p.l.Info("Attaching Packetparser",
+		zap.Int("outgoingLink.Index", outgoingLinkAttributes.Index),
+		zap.String("outgoingLink.Name", outgoingLinkAttributes.Name),
+		zap.Stringer("outgoingLink.HardwareAddr", outgoingLinkAttributes.HardwareAddr),
+	)
+	p.createQdiscAndAttach(*outgoingLink.Attrs(), Device)
 
 	// Create the channel.
 	p.recordsChannel = make(chan perf.Record, buffer)
 	p.l.Debug("Created records channel")
 
-	p.l.Info("Started packet parser")
 	return p.run(ctx)
 }
 
@@ -487,8 +493,6 @@ func (p *packetParser) createQdiscAndAttach(iface netlink.LinkAttrs, ifaceType s
 }
 
 func (p *packetParser) run(ctx context.Context) error {
-	p.l.Info("Starting packet parser")
-
 	// Start perf record handlers (consumers).
 	for i := 0; i < workers; i++ {
 		p.wg.Add(1)
@@ -499,6 +503,8 @@ func (p *packetParser) run(ctx context.Context) error {
 	// The perf reader Read call blocks until there is data available in the perf buffer.
 	// That call is unblocked when Reader is closed.
 	go p.handleEvents(ctx)
+
+	p.l.Info("Started packet parser")
 
 	// Wait for the context to be done.
 	// This will block till all consumers exit.
@@ -526,7 +532,12 @@ func (p *packetParser) processRecord(ctx context.Context, id int) {
 				zap.Int("worker_id", id),
 			)
 
-			bpfEvent := (*packetparserPacket)(unsafe.Pointer(&record.RawSample[0])) //nolint:typecheck
+			var bpfEvent packetparserPacket
+			err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &bpfEvent)
+			if err != nil {
+				p.l.Error("Error reading bpfEvent", zap.Error(err))
+				continue
+			}
 
 			// Post processing of the bpfEvent.
 			// Anything after this is required only for Pod level metrics.
@@ -534,7 +545,7 @@ func (p *packetParser) processRecord(ctx context.Context, id int) {
 			destinationPortShort := uint32(utils.HostToNetShort(bpfEvent.DstPort))
 
 			fl := utils.ToFlow(
-				int64(bpfEvent.Ts),
+				ktime.MonotonicOffset.Nanoseconds()+int64(bpfEvent.Ts),
 				utils.Int2ip(bpfEvent.SrcIp).To4(), // Precautionary To4() call.
 				utils.Int2ip(bpfEvent.DstIp).To4(), // Precautionary To4() call.
 				sourcePortShort,
@@ -542,31 +553,36 @@ func (p *packetParser) processRecord(ctx context.Context, id int) {
 				bpfEvent.Proto,
 				bpfEvent.Dir,
 				flow.Verdict_FORWARDED,
-				0,
 			)
 			if fl == nil {
 				p.l.Warn("Could not convert bpfEvent to flow", zap.Any("bpfEvent", bpfEvent))
 				continue
 			}
-			utils.AddPacketSize(fl, bpfEvent.Bytes)
+
+			meta := &utils.RetinaMetadata{}
+
+			// Add packet size to the flow's metadata.
+			utils.AddPacketSize(meta, bpfEvent.Bytes)
+
 			// Add the TCP metadata to the flow.
 			tcpMetadata := bpfEvent.TcpMetadata
-			utils.AddTcpFlags(fl, tcpMetadata.Syn, tcpMetadata.Ack, tcpMetadata.Fin, tcpMetadata.Rst, tcpMetadata.Psh, tcpMetadata.Urg)
+			utils.AddTCPFlags(fl, tcpMetadata.Syn, tcpMetadata.Ack, tcpMetadata.Fin, tcpMetadata.Rst, tcpMetadata.Psh, tcpMetadata.Urg)
 
 			// For packets originating from node, we use tsval as the tcpID.
 			// Packets coming back has the tsval echoed in tsecr.
 			if fl.TraceObservationPoint == flow.TraceObservationPoint_TO_NETWORK {
-				utils.AddTcpID(fl, uint64(tcpMetadata.Tsval))
+				utils.AddTCPID(meta, uint64(tcpMetadata.Tsval))
 			} else if fl.TraceObservationPoint == flow.TraceObservationPoint_FROM_NETWORK {
-				utils.AddTcpID(fl, uint64(tcpMetadata.Tsecr))
+				utils.AddTCPID(meta, uint64(tcpMetadata.Tsecr))
 			}
 
-			p.l.Debug("Received packet", zap.Any("flow", fl))
+			// Add metadata to the flow.
+			utils.AddRetinaMetadata(fl, meta)
 
 			// Write the event to the enricher.
 			ev := &v1.Event{
 				Event:     fl,
-				Timestamp: fl.Time,
+				Timestamp: fl.GetTime(),
 			}
 			if p.enricher != nil {
 				p.enricher.Write(ev)
@@ -621,11 +637,9 @@ func (p *packetParser) readData() {
 
 	select {
 	case p.recordsChannel <- record:
-		p.l.Debug("Sent record to channel", zap.Any("record", record))
 	default:
 		// Channel is full, drop the record.
 		// We shouldn't slow down the perf array reader.
-		// p.l.Warn("Channel is full, dropping record", zap.Any("lost samples", record))
 		metrics.LostEventsCounter.WithLabelValues(utils.BufferedChannel, string(Name)).Inc()
 	}
 }

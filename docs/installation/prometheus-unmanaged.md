@@ -15,7 +15,7 @@
   helm repo update
   ```
 
-2. Save **[these Prometheus values](https://github.com/microsoft/retina/blob/main/deploy/prometheus/values.yaml)** below to `deploy/prometheus/values.yaml`
+2. Save **[these Prometheus values](https://github.com/microsoft/retina/blob/main/deploy/legacy/prometheus/values.yaml)** below to `deploy/legacy/prometheus/values.yaml`
 
 3. Install the Prometheus chart
 
@@ -29,7 +29,7 @@ Or if you already have the chart installed, upgrade how you see fit, providing t
   helm upgrade prometheus -n kube-system -f deploy/prometheus/values.yaml prometheus-community/kube-prometheus-stack
   ```
 
-Node: Grafana and kube-state metrics may schedule on Windows nodes, the current chart doesn't have node affinity for those components. Some manual intervention may be required.
+Note: Grafana and kube-state metrics may schedule on Windows nodes, the current chart doesn't have node affinity for those components. Some manual intervention may be required.
 
 6. Verify that the Retina Pods are being scraped by port-forwarding the Prometheus server:
 

@@ -36,10 +36,10 @@ const (
 	portCtxOption = "port"
 
 	// workloads context option
-	workloadKindCtxOption = "workloadKind"
+	workloadKindCtxOption = "workload_kind"
 
 	// workload context option
-	workloadNameCtxOption = "workloadName"
+	workloadNameCtxOption = "workload_name"
 
 	// workload context option
 	workloadCtxOption = "workload"
@@ -59,7 +59,7 @@ const (
 	egress = "egress"
 )
 
-//go:generate go run github.com/golang/mock/mockgen@v1.6.0 -source=types.go -destination=mock_types.go -package=metrics
+//go:generate go run go.uber.org/mock/mockgen@v0.4.0 -source=types.go -destination=mock_types.go -package=metrics
 type IModule interface {
 	Reconcile(spec *api.MetricsSpec) error
 }

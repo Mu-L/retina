@@ -20,14 +20,20 @@
 # Go workspace file
 go.work
 
+# Object files
+*.o
+
 # docusaurus
 site/yarn.lock
 site/.docusaurus/
 site/node_modules/
 
 hack/tools/bin
-
+output
 #vscode 
 .vscode/
 
 dist/
+bin/
+
+image-metadata-*.json

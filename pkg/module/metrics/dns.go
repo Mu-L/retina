@@ -5,6 +5,7 @@ package metrics
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	v1 "github.com/cilium/cilium/api/v1/flow"
@@ -13,6 +14,7 @@ import (
 	"github.com/microsoft/retina/pkg/log"
 	metricsinit "github.com/microsoft/retina/pkg/metrics"
 	"github.com/microsoft/retina/pkg/utils"
+	"github.com/pkg/errors"
 	"go.uber.org/zap"
 )
 
@@ -55,20 +57,20 @@ func (d *DNSMetrics) Init(metricName string) {
 			exporter.AdvancedRegistry,
 			DNSRequestCountName,
 			DNSRequestCountDesc,
-			d.getLabels()...,
+			d.getRequestLabels()...,
 		)
 	case utils.DNSResponseCounterName:
 		d.dnsMetrics = exporter.CreatePrometheusCounterVecForMetric(
 			exporter.AdvancedRegistry,
 			DNSResponseCountName,
 			DNSResponseCountDesc,
-			d.getLabels()...,
+			d.getResponseLabels()...,
 		)
 	}
 }
 
-func (d *DNSMetrics) getLabels() []string {
-	labels := utils.DNSLabels
+func (d *DNSMetrics) getRequestLabels() []string {
+	labels := utils.DNSRequestLabels
 	if d.srcCtx != nil {
 		labels = append(labels, d.srcCtx.getLabels()...)
 		d.l.Info("src labels", zap.Any("labels", labels))
@@ -82,9 +84,24 @@ func (d *DNSMetrics) getLabels() []string {
 	return labels
 }
 
-func (d *DNSMetrics) values(flow *v1.Flow) []string {
-	flowDns, dnsType, numResponses := utils.GetDns(flow)
-	if flowDns == nil {
+func (d *DNSMetrics) getResponseLabels() []string {
+	labels := utils.DNSResponseLabels
+	if d.srcCtx != nil {
+		labels = append(labels, d.srcCtx.getLabels()...)
+		d.l.Info("src labels", zap.Any("labels", labels))
+	}
+
+	if d.dstCtx != nil {
+		labels = append(labels, d.dstCtx.getLabels()...)
+		d.l.Info("dst labels", zap.Any("labels", labels))
+	}
+
+	return labels
+}
+
+func (d *DNSMetrics) requestValues(flow *v1.Flow) []string {
+	flowDNS, dnsType, _ := utils.GetDNS(flow)
+	if flowDNS == nil {
 		return nil
 	}
 	if dnsType == utils.DNSType_UNKNOWN ||
@@ -93,15 +110,51 @@ func (d *DNSMetrics) values(flow *v1.Flow) []string {
 		return nil
 	}
 
-	// Ref: DNSLabels {"return_code", "query_type", "query", "response", "num_response"}
-	// "Response" label for DNS maybe empty. This is to avoid
-	// https://github.com/inspektor-gadget/inspektor-gadget/issues/2008 .
-	// Also ref: https://github.com/inspektor-gadget/inspektor-gadget/blob/main/docs/gadgets/trace/dns.md#limitations .
 	labels := []string{
-		utils.DnsRcodeToString(flow),
-		strings.Join(flowDns.Qtypes, ","), flowDns.Query, strings.Join(flowDns.Ips, ","), fmt.Sprintf("%d", numResponses),
+		strings.Join(flowDNS.GetQtypes(), ","),
+		flowDNS.GetQuery(),
 	}
 	return labels
+}
+
+func (d *DNSMetrics) responseValues(flow *v1.Flow) []string {
+	flowDNS, dnsType, numResponses := utils.GetDNS(flow)
+	if flowDNS == nil {
+		return nil
+	}
+	if dnsType == utils.DNSType_UNKNOWN ||
+		(d.metricName == utils.DNSRequestCounterName && dnsType != utils.DNSType_QUERY) ||
+		(d.metricName == utils.DNSResponseCounterName && dnsType != utils.DNSType_RESPONSE) {
+		return nil
+	}
+
+	labels := []string{
+		utils.DNSRcodeToString(flow),
+		strings.Join(flowDNS.GetQtypes(), ","),
+		flowDNS.GetQuery(),
+		strings.Join(flowDNS.GetIps(), ","),
+		strconv.FormatUint(uint64(numResponses), 10),
+	}
+	return labels
+}
+
+func (d *DNSMetrics) getLabelsForProcessFlow(flow *v1.Flow) ([]string, error) {
+	var labels []string
+	// Get the DNS query type
+	meta := utils.RetinaMetadata{}
+	if err := flow.GetExtensions().UnmarshalTo(&meta); err != nil {
+		return labels, errors.Wrapf(err, "failed to unmarshal flow extensions")
+	}
+	switch meta.GetDnsType() {
+	case utils.DNSType_QUERY:
+		labels = d.requestValues(flow)
+	case utils.DNSType_RESPONSE:
+		labels = d.responseValues(flow)
+	case utils.DNSType_UNKNOWN:
+	default:
+		return labels, errors.Errorf("invalid DNS type %d", int32(meta.GetDnsType()))
+	}
+	return labels, nil
 }
 
 func (d *DNSMetrics) ProcessFlow(flow *v1.Flow) {
@@ -120,10 +173,16 @@ func (d *DNSMetrics) ProcessFlow(flow *v1.Flow) {
 		return
 	}
 
-	labels := d.values(flow)
-	if labels == nil {
+	labels, err := d.getLabelsForProcessFlow(flow)
+	if err != nil {
+		d.l.Error("Failed to get labels for process flow", zap.Error(err))
 		return
 	}
+
+	if len(labels) == 0 {
+		return
+	}
+
 	if d.srcCtx != nil {
 		srcLabels := d.srcCtx.getValues(flow)
 		if len(srcLabels) > 0 {
@@ -148,8 +207,13 @@ func (d *DNSMetrics) processLocalCtxFlow(flow *v1.Flow) {
 		return
 	}
 
-	labels := d.values(flow)
-	if labels == nil {
+	labels, err := d.getLabelsForProcessFlow(flow)
+	if err != nil {
+		d.l.Error("Failed to get labels for process flow", zap.Error(err))
+		return
+	}
+
+	if len(labels) == 0 {
 		return
 	}
 
